@@ -1,434 +1,430 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { Settings, Info, Maximize2, RotateCcw, Move } from 'lucide-react';
-
-export default function ConeSectionTool() {
-  const [height, setHeight] = useState(2); // Initial plane height (0 to 4)
-  const [offsetX, setOffsetX] = useState(0); // Horizontal translation
-  const [showPlane, setShowPlane] = useState(true);
-  const [isThreeLoaded, setIsThreeLoaded] = useState(false);
-  const containerRef = useRef<HTMLDivElement>(null);
-  
-  // Refs to store Three.js objects
-  const sceneRef = useRef<any>(null);
-  const cameraRef = useRef<any>(null);
-  const rendererRef = useRef<any>(null);
-  const planeMeshRef = useRef<any>(null);
-  const intersectionRingRef = useRef<any>(null);
-  const radiusLineRef = useRef<any>(null);
-  
-  // Camera control refs
-  const isDragging = useRef(false);
-  const isPanning = useRef(false); // New: Pan state
-  const previousMousePosition = useRef({ x: 0, y: 0 });
-  
-  // Spherical Coordinates for Orbit
-  const cameraAngle = useRef({ theta: Math.PI / 4, phi: Math.PI / 6 });
-  const cameraRadius = useRef(10);
-  const cameraTarget = useRef({ x: 0, y: 2.5, z: 0 }); // New: Target to look at (for panning)
-
-  // Constants for Geometry
-  const CONE_RADIUS = 2.5;
-  const CONE_HEIGHT = 5;
-
-  // 1. Load Three.js
-  useEffect(() => {
-    if (window.THREE) {
-      setIsThreeLoaded(true);
-      return;
-    }
-
-    const script = document.createElement('script');
-    script.src = 'https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js';
-    script.async = true;
-    script.onload = () => setIsThreeLoaded(true);
-    document.body.appendChild(script);
-
-    return () => {
-      document.body.removeChild(script);
-    };
-  }, []);
-
-  // 2. Initialize Scene
-  useEffect(() => {
-    if (!isThreeLoaded || !containerRef.current) return;
-
-    const THREE = (window as any).THREE;
-
-    // Scene setup
-    const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0xffffff);
-    sceneRef.current = scene;
-
-    // Camera setup
-    const camera = new THREE.PerspectiveCamera(
-      45,
-      containerRef.current.clientWidth / containerRef.current.clientHeight,
-      0.1,
-      100
-    );
-    cameraRef.current = camera;
-    updateCameraPosition();
-
-    // Renderer setup
-    const renderer = new THREE.WebGLRenderer({ antialias: true });
-    renderer.setSize(containerRef.current.clientWidth, containerRef.current.clientHeight);
-    renderer.setPixelRatio(window.devicePixelRatio);
-    renderer.shadowMap.enabled = true;
-    containerRef.current.appendChild(renderer.domElement);
-    rendererRef.current = renderer;
-
-    // --- Lighting ---
-    const ambientLight = new THREE.AmbientLight(0x404040, 1.5);
-    scene.add(ambientLight);
-
-    const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
-    dirLight.position.set(5, 10, 7);
-    dirLight.castShadow = true;
-    scene.add(dirLight);
-
-    // --- Grid & Axes ---
-    const gridHelper = new THREE.GridHelper(20, 20, 0xcccccc, 0xe5e5e5);
-    scene.add(gridHelper);
-    
-    // Axis Helper (X: Red, Y: Green, Z: Blue)
-    const axesHelper = new THREE.AxesHelper(3);
-    scene.add(axesHelper);
-
-    // --- Objects ---
-
-    // 1. The Cone (Transparent)
-    const coneGeo = new THREE.ConeGeometry(CONE_RADIUS, CONE_HEIGHT, 64, 1, true); // open ended
-    const coneMat = new THREE.MeshPhongMaterial({ 
-      color: 0x2563eb, 
-      transparent: true, 
-      opacity: 0.3, 
-      side: THREE.DoubleSide,
-      shininess: 100
-    });
-    const cone = new THREE.Mesh(coneGeo, coneMat);
-    cone.position.y = CONE_HEIGHT / 2;
-    scene.add(cone);
-    
-    // Cone Base (Cap)
-    const baseGeo = new THREE.CircleGeometry(CONE_RADIUS, 64);
-    const baseMat = new THREE.MeshBasicMaterial({ color: 0x2563eb, transparent: true, opacity: 0.1, side: THREE.DoubleSide });
-    const base = new THREE.Mesh(baseGeo, baseMat);
-    base.rotation.x = -Math.PI / 2;
-    scene.add(base);
-
-    // 2. The Cutting Plane
-    const planeGeo = new THREE.PlaneGeometry(8, 8);
-    const planeMat = new THREE.MeshPhongMaterial({ 
-      color: 0x64748b, 
-      transparent: true, 
-      opacity: 0.2, 
-      side: THREE.DoubleSide,
-      depthWrite: false
-    });
-    const plane = new THREE.Mesh(planeGeo, planeMat);
-    plane.rotation.x = -Math.PI / 2;
-    plane.visible = showPlane;
-    scene.add(plane);
-    planeMeshRef.current = plane;
-
-    // 3. Intersection Ring
-    const ringGeo = new THREE.TorusGeometry(1, 0.05, 32, 100);
-    const ringMat = new THREE.MeshBasicMaterial({ color: 0xdc2626 }); // Red
-    const ring = new THREE.Mesh(ringGeo, ringMat);
-    ring.rotation.x = -Math.PI / 2;
-    scene.add(ring);
-    intersectionRingRef.current = ring;
-
-    // 4. Radius Line
-    const lineGeo = new THREE.BufferGeometry().setFromPoints([
-        new THREE.Vector3(0, 0, 0),
-        new THREE.Vector3(1, 0, 0)
-    ]);
-    const lineMat = new THREE.LineBasicMaterial({ color: 0xdc2626, linewidth: 2 });
-    const rLine = new THREE.Line(lineGeo, lineMat);
-    scene.add(rLine);
-    radiusLineRef.current = rLine;
-
-    // 5. Center Axis Line
-    const axisGeo = new THREE.BufferGeometry().setFromPoints([
-        new THREE.Vector3(0, 0, 0),
-        new THREE.Vector3(0, CONE_HEIGHT, 0)
-    ]);
-    const axisMat = new THREE.LineDashedMaterial({ color: 0x000000, dashSize: 0.2, gapSize: 0.1, opacity: 0.5, transparent: true });
-    const axisLine = new THREE.Line(axisGeo, axisMat);
-    axisLine.computeLineDistances();
-    scene.add(axisLine);
-
-    // Animation Loop
-    const animate = () => {
-      if (!rendererRef.current) return;
-      requestAnimationFrame(animate);
-      rendererRef.current.render(scene, camera);
-    };
-    animate();
-
-    const handleResize = () => {
-      if (!containerRef.current || !cameraRef.current || !rendererRef.current) return;
-      const width = containerRef.current.clientWidth;
-      const height = containerRef.current.clientHeight;
-      cameraRef.current.aspect = width / height;
-      cameraRef.current.updateProjectionMatrix();
-      rendererRef.current.setSize(width, height);
-    };
-    window.addEventListener('resize', handleResize);
-
-    return () => {
-      window.removeEventListener('resize', handleResize);
-      if (containerRef.current && rendererRef.current) {
-        containerRef.current.removeChild(rendererRef.current.domElement);
-      }
-      rendererRef.current.dispose();
-    };
-  }, [isThreeLoaded]);
-
-  // 3. Update Scene based on State
-  useEffect(() => {
-    if (!isThreeLoaded || !planeMeshRef.current) return;
-
-    const currentHeight = Math.max(0, Math.min(CONE_HEIGHT, height));
-    
-    // Update Plane Position (Height AND Horizontal Offset)
-    planeMeshRef.current.position.y = currentHeight;
-    planeMeshRef.current.position.x = offsetX; // Apply offset
-    planeMeshRef.current.visible = showPlane;
-
-    // Intersection Logic
-    // Note: For a horizontal plane, horizontal offset does NOT change the intersection shape 
-    // relative to the cone axis, as long as the plane still cuts the cone.
-    // The red ring represents the intersection with the infinite mathematical plane y = h.
-    const currentRadius = CONE_RADIUS * ((CONE_HEIGHT - currentHeight) / CONE_HEIGHT);
-
-    if (intersectionRingRef.current) {
-        intersectionRingRef.current.position.y = currentHeight;
-        const scale = Math.max(0.001, currentRadius);
-        intersectionRingRef.current.scale.set(scale, scale, 1); 
-    }
-
-    if (radiusLineRef.current) {
-        radiusLineRef.current.position.y = currentHeight;
-        const positions = radiusLineRef.current.geometry.attributes.position.array;
-        positions[3] = currentRadius; 
-        radiusLineRef.current.geometry.attributes.position.needsUpdate = true;
-    }
-
-  }, [height, offsetX, showPlane, isThreeLoaded]);
-
-  // Helper: Update Camera Position
-  const updateCameraPosition = () => {
-    if (!cameraRef.current) return;
-    const { theta, phi } = cameraAngle.current;
-    const r = cameraRadius.current;
-    const target = cameraTarget.current;
-    
-    const x = r * Math.sin(phi) * Math.sin(theta);
-    const y = r * Math.cos(phi);
-    const z = r * Math.sin(phi) * Math.cos(theta);
-
-    cameraRef.current.position.set(x + target.x, y + target.y, z + target.z);
-    cameraRef.current.lookAt(target.x, target.y, target.z);
-  };
-
-  // Mouse Handlers
-  const handleMouseDown = (e: React.MouseEvent) => {
-    // Right click (button 2) or Shift+Click for Panning
-    if (e.button === 2 || e.shiftKey) {
-        isPanning.current = true;
-    } else {
-        isDragging.current = true;
-    }
-    previousMousePosition.current = { x: e.clientX, y: e.clientY };
-  };
-
-  const handleMouseMove = (e: React.MouseEvent) => {
-    const deltaX = e.clientX - previousMousePosition.current.x;
-    const deltaY = e.clientY - previousMousePosition.current.y;
-    previousMousePosition.current = { x: e.clientX, y: e.clientY };
-
-    if (isDragging.current) {
-        // Orbit
-        cameraAngle.current.theta -= deltaX * 0.01;
-        cameraAngle.current.phi -= deltaY * 0.01;
-        cameraAngle.current.phi = Math.max(0.1, Math.min(Math.PI - 0.1, cameraAngle.current.phi));
-        updateCameraPosition();
-    } else if (isPanning.current) {
-        // Pan
-        // Project movement onto camera plane approximate
-        const panSpeed = 0.02 * (cameraRadius.current / 10);
-        const theta = cameraAngle.current.theta;
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>圓錐體截面 (Conic Section)</title>
+    <!-- Tailwind CSS for styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Three.js CDN -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <style>
+        body { margin: 0; overflow: hidden; }
+        /* Custom range slider styling */
+        input[type=range] {
+            -webkit-appearance: none; 
+            background: transparent; 
+        }
+        input[type=range]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            height: 16px;
+            width: 16px;
+            border-radius: 50%;
+            background: #4f46e5;
+            cursor: pointer;
+            margin-top: -6px; 
+            box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+        }
+        input[type=range]::-webkit-slider-runnable-track {
+            width: 100%;
+            height: 4px;
+            cursor: pointer;
+            background: #e2e8f0;
+            border-radius: 2px;
+        }
+        input[type=range]:focus { outline: none; }
         
-        // Simple pan logic relative to view direction
-        // Right vector approximation
-        const rightX = Math.cos(theta);
-        const rightZ = -Math.sin(theta);
-        
-        cameraTarget.current.x -= (rightX * deltaX) * panSpeed;
-        cameraTarget.current.z -= (rightZ * deltaX) * panSpeed;
-        cameraTarget.current.y += deltaY * panSpeed; // Y is up
-        
-        updateCameraPosition();
-    }
-  };
+        /* Specific color for X slider */
+        #slider-x::-webkit-slider-thumb { background: #0d9488; }
+    </style>
+</head>
+<body class="bg-slate-50 font-sans text-slate-900 h-screen flex flex-col">
 
-  const handleMouseUp = () => {
-    isDragging.current = false;
-    isPanning.current = false;
-  };
-
-  const handleWheel = (e: React.WheelEvent) => {
-    cameraRadius.current += e.deltaY * 0.01;
-    cameraRadius.current = Math.max(2, Math.min(30, cameraRadius.current));
-    updateCameraPosition();
-  };
-
-  return (
-    <div className="flex flex-col h-screen w-full bg-slate-50 font-sans text-slate-900">
-      
-      {/* Header */}
-      <div className="h-14 bg-white border-b border-slate-200 flex items-center px-4 justify-between shadow-sm z-10 shrink-0">
-        <div className="flex items-center space-x-2">
-          <div className="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center text-white font-bold">3D</div>
-          <h1 className="font-semibold text-lg text-slate-700">圓錐體截面 (Conic Section)</h1>
+    <!-- Header -->
+    <div class="h-14 bg-white border-b border-slate-200 flex items-center px-4 justify-between shadow-sm z-10 shrink-0">
+        <div class="flex items-center space-x-2">
+            <div class="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center text-white font-bold">3D</div>
+            <h1 class="font-semibold text-lg text-slate-700">圓錐體截面 (Conic Section)</h1>
         </div>
         
-        <div className="flex items-center space-x-4 text-xs sm:text-sm text-slate-500">
-          <div className="hidden sm:flex items-center">
-             <Move size={14} className="mr-1" /> 右鍵平移視角
-          </div>
-          <div className="hidden sm:flex items-center">
-            <RotateCcw size={14} className="mr-1" /> 左鍵旋轉
-          </div>
-          <div className="hidden sm:flex items-center">
-            <Maximize2 size={14} className="mr-1" /> 滾輪縮放
-          </div>
+        <div class="flex items-center space-x-4 text-xs sm:text-sm text-slate-500">
+            <div class="hidden sm:flex items-center">
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="mr-1"><polyline points="5 9 2 12 5 15"></polyline><polyline points="9 5 12 2 15 5"></polyline><polyline points="19 9 22 12 19 15"></polyline><polyline points="15 19 12 22 9 19"></polyline><polyline points="2 12 22 12"></polyline><polyline points="12 2 12 22"></polyline></svg>
+                右鍵平移視角
+            </div>
+            <div class="hidden sm:flex items-center">
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="mr-1"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path><path d="M3 3v5h5"></path></svg>
+                左鍵旋轉
+            </div>
+            <div class="hidden sm:flex items-center">
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="mr-1"><path d="M15 3h6v6"></path><path d="M9 21H3v-6"></path><path d="M21 3l-7 7"></path><path d="M3 21l7-7"></path></svg>
+                滾輪縮放
+            </div>
         </div>
-      </div>
+    </div>
 
-      <div className="flex flex-1 overflow-hidden relative">
+    <!-- Main Content Area -->
+    <div class="flex-1 relative overflow-hidden">
         
-        {/* 3D Canvas */}
-        <div 
-            ref={containerRef} 
-            className="w-full h-full cursor-move"
-            onMouseDown={handleMouseDown}
-            onMouseMove={handleMouseMove}
-            onMouseUp={handleMouseUp}
-            onMouseLeave={handleMouseUp}
-            onWheel={handleWheel}
-            onContextMenu={(e) => e.preventDefault()} // Disable context menu for right drag
-        >
-             {!isThreeLoaded && (
-                <div className="flex items-center justify-center h-full w-full text-slate-400">
-                    載入 3D 引擎中...
-                </div>
-             )}
-        </div>
+        <!-- 3D Canvas Container -->
+        <div id="canvas-container" class="w-full h-full cursor-move outline-none"></div>
 
-        {/* Controls Panel */}
-        <div className="absolute top-4 left-4 w-72 bg-white/95 backdrop-blur shadow-lg rounded-xl border border-slate-200 p-4 flex flex-col space-y-4 max-h-[calc(100vh-80px)] overflow-y-auto">
+        <!-- Controls Panel -->
+        <div class="absolute top-4 left-4 w-72 bg-white/95 backdrop-blur shadow-lg rounded-xl border border-slate-200 p-4 flex flex-col space-y-4 max-h-[calc(100vh-80px)] overflow-y-auto">
             
-            <div className="flex items-center justify-between border-b border-slate-100 pb-2">
-                <span className="font-semibold text-slate-700 flex items-center">
-                    <Settings size={16} className="mr-2" /> 控制面板
+            <div class="flex items-center justify-between border-b border-slate-100 pb-2">
+                <span class="font-semibold text-slate-700 flex items-center">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="mr-2"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.09a2 2 0 0 1-1-1.74v-.47a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.39a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path><circle cx="12" cy="12" r="3"></circle></svg>
+                    控制面板
                 </span>
-                <button 
-                  onClick={() => {
-                      setHeight(2); 
-                      setOffsetX(0);
-                      cameraTarget.current = {x:0, y:2.5, z:0};
-                      updateCameraPosition();
-                  }}
-                  className="text-xs text-indigo-600 hover:text-indigo-800"
-                >
-                    重置
-                </button>
+                <button id="btn-reset" class="text-xs text-indigo-600 hover:text-indigo-800 font-medium">重置</button>
             </div>
 
-            {/* Height Slider */}
-            <div className="space-y-1">
-                <div className="flex justify-between text-sm">
-                    <label className="text-slate-600 font-medium">截面高度 (y)</label>
-                    <span className="text-indigo-600 font-mono font-bold">{height.toFixed(2)}</span>
+            <!-- Height Slider -->
+            <div class="space-y-1">
+                <div class="flex justify-between text-sm">
+                    <label class="text-slate-600 font-medium">截面高度 (y)</label>
+                    <span id="val-height" class="text-indigo-600 font-mono font-bold">2.00</span>
                 </div>
-                <input 
-                    type="range" 
-                    min="0" 
-                    max={CONE_HEIGHT} 
-                    step="0.01"
-                    value={height}
-                    onChange={(e) => setHeight(parseFloat(e.target.value))}
-                    className="w-full h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-indigo-600"
-                />
+                <input id="slider-height" type="range" min="0" max="5" step="0.01" value="2">
             </div>
 
-            {/* Horizontal Offset Slider */}
-            <div className="space-y-1">
-                <div className="flex justify-between text-sm">
-                    <label className="text-slate-600 font-medium">水平平移 (x)</label>
-                    <span className="text-indigo-600 font-mono font-bold">{offsetX.toFixed(2)}</span>
+            <!-- Horizontal Offset Slider -->
+            <div class="space-y-1">
+                <div class="flex justify-between text-sm">
+                    <label class="text-slate-600 font-medium">水平平移 (x)</label>
+                    <span id="val-offset" class="text-indigo-600 font-mono font-bold">0.00</span>
                 </div>
-                <input 
-                    type="range" 
-                    min="-3" 
-                    max="3" 
-                    step="0.1"
-                    value={offsetX}
-                    onChange={(e) => setOffsetX(parseFloat(e.target.value))}
-                    className="w-full h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-teal-600"
-                />
-                <p className="text-[10px] text-slate-400 leading-tight">
+                <input id="slider-x" type="range" min="-3" max="3" step="0.1" value="0">
+                <p class="text-[10px] text-slate-400 leading-tight pt-1">
                     *水平平移平面不會改變正圓錐體的圓形截面大小。
                 </p>
             </div>
 
-            {/* Radius Display */}
-            <div className="space-y-2 pt-2 border-t border-slate-100">
-                 <div className="flex justify-between text-sm">
-                    <label className="text-slate-600 font-medium">截面半徑 (r)</label>
-                    <span className="text-red-500 font-mono font-bold">
-                        {(CONE_RADIUS * ((CONE_HEIGHT - height) / CONE_HEIGHT)).toFixed(2)}
-                    </span>
+            <!-- Radius Display -->
+            <div class="space-y-2 pt-2 border-t border-slate-100">
+                 <div class="flex justify-between text-sm">
+                    <label class="text-slate-600 font-medium">截面半徑 (r)</label>
+                    <span id="val-radius" class="text-red-500 font-mono font-bold">1.50</span>
                 </div>
-                <div className="h-1 w-full bg-slate-100 rounded overflow-hidden">
-                    <div 
-                        className="h-full bg-red-500 transition-all duration-75"
-                        style={{ width: `${((CONE_RADIUS * ((CONE_HEIGHT - height) / CONE_HEIGHT)) / CONE_RADIUS) * 100}%` }}
-                    />
+                <div class="h-1 w-full bg-slate-100 rounded overflow-hidden">
+                    <div id="bar-radius" class="h-full bg-red-500 transition-all duration-75" style="width: 60%"></div>
                 </div>
             </div>
 
-            {/* Toggles */}
-            <div className="pt-2">
-                <label className="flex items-center space-x-2 cursor-pointer hover:bg-slate-50 p-1 rounded transition-colors">
-                    <input 
-                        type="checkbox" 
-                        checked={showPlane} 
-                        onChange={(e) => setShowPlane(e.target.checked)}
-                        className="rounded text-indigo-600 focus:ring-indigo-500 border-gray-300"
-                    />
-                    <span className="text-sm text-slate-600">顯示切割平面</span>
+            <!-- Toggles -->
+            <div class="pt-2">
+                <label class="flex items-center space-x-2 cursor-pointer hover:bg-slate-50 p-1 rounded transition-colors">
+                    <input id="check-plane" type="checkbox" checked class="accent-indigo-600 w-4 h-4 rounded border-gray-300">
+                    <span class="text-sm text-slate-600">顯示切割平面</span>
                 </label>
             </div>
 
-            {/* Info Box */}
-            <div className="bg-indigo-50 p-3 rounded-lg text-xs text-indigo-800 flex items-start space-x-2 mt-2">
-                <Info size={16} className="mt-0.5 shrink-0" />
+            <!-- Info Box -->
+            <div class="bg-indigo-50 p-3 rounded-lg text-xs text-indigo-800 flex items-start space-x-2 mt-2">
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="mt-0.5 shrink-0"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>
                 <div>
-                    <p className="font-semibold mb-1">截面性質:</p>
-                    <p>當平面平行於底面時，截面為<span className="font-bold">圓形</span>。</p>
-                    <p className="mt-1 opacity-80">
-                        平移切割平面不會影響截面形狀，除非改變切割角度（此工具目前僅演示水平切割）。
+                    <p class="font-semibold mb-1">截面性質:</p>
+                    <p>當平面平行於底面時，截面為<span class="font-bold">圓形</span>。</p>
+                    <p class="mt-1 opacity-80">
+                        平移切割平面不會影響截面形狀。
                     </p>
                 </div>
             </div>
 
         </div>
-
-      </div>
     </div>
-  );
-}
+
+    <script>
+        // Constants
+        const CONE_RADIUS = 2.5;
+        const CONE_HEIGHT = 5;
+
+        // State
+        let state = {
+            height: 2.0,
+            offsetX: 0.0,
+            showPlane: true
+        };
+
+        // DOM Elements
+        const container = document.getElementById('canvas-container');
+        const sliderHeight = document.getElementById('slider-height');
+        const sliderX = document.getElementById('slider-x');
+        const valHeight = document.getElementById('val-height');
+        const valOffset = document.getElementById('val-offset');
+        const valRadius = document.getElementById('val-radius');
+        const barRadius = document.getElementById('bar-radius');
+        const checkPlane = document.getElementById('check-plane');
+        const btnReset = document.getElementById('btn-reset');
+
+        // Three.js Variables
+        let scene, camera, renderer;
+        let planeMesh, intersectionRing, radiusLine;
+        
+        // Camera Control Variables
+        let isDragging = false;
+        let isPanning = false;
+        let previousMousePosition = { x: 0, y: 0 };
+        let cameraAngle = { theta: Math.PI / 4, phi: Math.PI / 6 };
+        let cameraRadius = 10;
+        let cameraTarget = { x: 0, y: 2.5, z: 0 };
+
+        function init() {
+            // 1. Scene
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0xffffff);
+
+            // 2. Camera
+            camera = new THREE.PerspectiveCamera(45, container.clientWidth / container.clientHeight, 0.1, 100);
+            updateCameraPosition();
+
+            // 3. Renderer
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(container.clientWidth, container.clientHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.shadowMap.enabled = true;
+            container.appendChild(renderer.domElement);
+
+            // 4. Lighting
+            const ambientLight = new THREE.AmbientLight(0x404040, 1.5);
+            scene.add(ambientLight);
+            const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            dirLight.position.set(5, 10, 7);
+            dirLight.castShadow = true;
+            scene.add(dirLight);
+
+            // 5. Helpers
+            const gridHelper = new THREE.GridHelper(20, 20, 0xcccccc, 0xe5e5e5);
+            scene.add(gridHelper);
+            const axesHelper = new THREE.AxesHelper(3);
+            scene.add(axesHelper);
+
+            // 6. Objects
+            createObjects();
+
+            // 7. Events
+            window.addEventListener('resize', onWindowResize);
+            addInteractionHandlers();
+            
+            // 8. Start Loop
+            animate();
+            
+            // Initial update
+            updateScene();
+        }
+
+        function createObjects() {
+            // Cone
+            const coneGeo = new THREE.ConeGeometry(CONE_RADIUS, CONE_HEIGHT, 64, 1, true);
+            const coneMat = new THREE.MeshPhongMaterial({ 
+                color: 0x2563eb, 
+                transparent: true, 
+                opacity: 0.3, 
+                side: THREE.DoubleSide,
+                shininess: 100
+            });
+            const cone = new THREE.Mesh(coneGeo, coneMat);
+            cone.position.y = CONE_HEIGHT / 2;
+            scene.add(cone);
+
+            // Base Cap
+            const baseGeo = new THREE.CircleGeometry(CONE_RADIUS, 64);
+            const baseMat = new THREE.MeshBasicMaterial({ color: 0x2563eb, transparent: true, opacity: 0.1, side: THREE.DoubleSide });
+            const base = new THREE.Mesh(baseGeo, baseMat);
+            base.rotation.x = -Math.PI / 2;
+            scene.add(base);
+
+            // Plane
+            const planeGeo = new THREE.PlaneGeometry(8, 8);
+            const planeMat = new THREE.MeshPhongMaterial({ 
+                color: 0x64748b, 
+                transparent: true, 
+                opacity: 0.2, 
+                side: THREE.DoubleSide,
+                depthWrite: false
+            });
+            planeMesh = new THREE.Mesh(planeGeo, planeMat);
+            planeMesh.rotation.x = -Math.PI / 2;
+            scene.add(planeMesh);
+
+            // Intersection Ring
+            const ringGeo = new THREE.TorusGeometry(1, 0.05, 32, 100);
+            const ringMat = new THREE.MeshBasicMaterial({ color: 0xdc2626 });
+            intersectionRing = new THREE.Mesh(ringGeo, ringMat);
+            intersectionRing.rotation.x = -Math.PI / 2;
+            scene.add(intersectionRing);
+
+            // Radius Line
+            const lineGeo = new THREE.BufferGeometry().setFromPoints([
+                new THREE.Vector3(0, 0, 0),
+                new THREE.Vector3(1, 0, 0)
+            ]);
+            const lineMat = new THREE.LineBasicMaterial({ color: 0xdc2626, linewidth: 2 });
+            radiusLine = new THREE.Line(lineGeo, lineMat);
+            scene.add(radiusLine);
+
+            // Axis Line
+            const axisGeo = new THREE.BufferGeometry().setFromPoints([
+                new THREE.Vector3(0, 0, 0),
+                new THREE.Vector3(0, CONE_HEIGHT, 0)
+            ]);
+            const axisMat = new THREE.LineDashedMaterial({ color: 0x000000, dashSize: 0.2, gapSize: 0.1, opacity: 0.5, transparent: true });
+            const axisLine = new THREE.Line(axisGeo, axisMat);
+            axisLine.computeLineDistances();
+            scene.add(axisLine);
+        }
+
+        function updateScene() {
+            // Update Vars
+            const h = Math.max(0, Math.min(CONE_HEIGHT, state.height));
+            const r = CONE_RADIUS * ((CONE_HEIGHT - h) / CONE_HEIGHT);
+
+            // Update Plane
+            if (planeMesh) {
+                planeMesh.position.y = h;
+                planeMesh.position.x = state.offsetX;
+                planeMesh.visible = state.showPlane;
+            }
+
+            // Update Ring
+            if (intersectionRing) {
+                intersectionRing.position.y = h;
+                // Ring stays centered on cone axis (0,0) because cone is at (0,0)
+                // Scaling
+                const scale = Math.max(0.001, r);
+                intersectionRing.scale.set(scale, scale, 1);
+            }
+
+            // Update Line
+            if (radiusLine) {
+                radiusLine.position.y = h;
+                const positions = radiusLine.geometry.attributes.position.array;
+                positions[3] = r; // x of second point
+                radiusLine.geometry.attributes.position.needsUpdate = true;
+            }
+
+            // Update UI Labels
+            valHeight.textContent = h.toFixed(2);
+            valOffset.textContent = state.offsetX.toFixed(2);
+            valRadius.textContent = r.toFixed(2);
+            barRadius.style.width = `${(r / CONE_RADIUS) * 100}%`;
+        }
+
+        function updateCameraPosition() {
+            const { theta, phi } = cameraAngle;
+            const r = cameraRadius;
+            const t = cameraTarget;
+            
+            const x = r * Math.sin(phi) * Math.sin(theta);
+            const y = r * Math.cos(phi);
+            const z = r * Math.sin(phi) * Math.cos(theta);
+
+            camera.position.set(x + t.x, y + t.y, z + t.z);
+            camera.lookAt(t.x, t.y, t.z);
+        }
+
+        // --- Interaction Handlers ---
+
+        function addInteractionHandlers() {
+            // UI Inputs
+            sliderHeight.addEventListener('input', (e) => {
+                state.height = parseFloat(e.target.value);
+                updateScene();
+            });
+            sliderX.addEventListener('input', (e) => {
+                state.offsetX = parseFloat(e.target.value);
+                updateScene();
+            });
+            checkPlane.addEventListener('change', (e) => {
+                state.showPlane = e.target.checked;
+                updateScene();
+            });
+            btnReset.addEventListener('click', () => {
+                state.height = 2;
+                state.offsetX = 0;
+                sliderHeight.value = 2;
+                sliderX.value = 0;
+                
+                // Reset Camera
+                cameraTarget = { x: 0, y: 2.5, z: 0 };
+                cameraAngle = { theta: Math.PI / 4, phi: Math.PI / 6 };
+                cameraRadius = 10;
+                
+                updateScene();
+                updateCameraPosition();
+            });
+
+            // Canvas Mouse Events
+            container.addEventListener('mousedown', (e) => {
+                if (e.button === 2 || e.shiftKey) {
+                    isPanning = true;
+                } else {
+                    isDragging = true;
+                }
+                previousMousePosition = { x: e.clientX, y: e.clientY };
+            });
+
+            window.addEventListener('mousemove', (e) => {
+                if (!isDragging && !isPanning) return;
+
+                const deltaX = e.clientX - previousMousePosition.x;
+                const deltaY = e.clientY - previousMousePosition.y;
+                previousMousePosition = { x: e.clientX, y: e.clientY };
+
+                if (isDragging) {
+                    // Rotate
+                    cameraAngle.theta -= deltaX * 0.01;
+                    cameraAngle.phi -= deltaY * 0.01;
+                    cameraAngle.phi = Math.max(0.1, Math.min(Math.PI - 0.1, cameraAngle.phi));
+                    updateCameraPosition();
+                } else if (isPanning) {
+                    // Pan
+                    const panSpeed = 0.02 * (cameraRadius / 10);
+                    const theta = cameraAngle.theta;
+                    
+                    const rightX = Math.cos(theta);
+                    const rightZ = -Math.sin(theta);
+                    
+                    cameraTarget.x -= (rightX * deltaX) * panSpeed;
+                    cameraTarget.z -= (rightZ * deltaX) * panSpeed;
+                    cameraTarget.y += deltaY * panSpeed;
+                    
+                    updateCameraPosition();
+                }
+            });
+
+            window.addEventListener('mouseup', () => {
+                isDragging = false;
+                isPanning = false;
+            });
+
+            // Prevent context menu
+            container.addEventListener('contextmenu', (e) => e.preventDefault());
+
+            // Wheel
+            container.addEventListener('wheel', (e) => {
+                e.preventDefault();
+                cameraRadius += e.deltaY * 0.01;
+                cameraRadius = Math.max(2, Math.min(30, cameraRadius));
+                updateCameraPosition();
+            }, { passive: false });
+        }
+
+        function onWindowResize() {
+            camera.aspect = container.clientWidth / container.clientHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(container.clientWidth, container.clientHeight);
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            renderer.render(scene, camera);
+        }
+
+        // Run
+        init();
+
+    </script>
+</body>
+</html>
